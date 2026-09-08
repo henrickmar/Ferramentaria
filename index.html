@@ -430,6 +430,14 @@
   }
   .detail-readonly-row { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); flex-wrap: wrap; gap: 8px; }
 
+  .detail-history-section { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .detail-history-title { font-family: 'Oswald', sans-serif; font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .detail-history-list { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; padding-right: 4px; }
+  .detail-history-item { display: flex; align-items: flex-start; gap: 10px; background: #FAFAFD; border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; }
+  .detail-history-body { flex: 1; min-width: 0; }
+  .detail-history-body .history-description { font-size: 12px; color: var(--ink); margin-top: 0; }
+  .detail-history-body .history-date { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
   /* Login */
   .login-page {
     min-height: 100vh;
@@ -856,7 +864,7 @@ function firstAccessiblePage(user) {
 /* =========================================================
    Estado
    ========================================================= */
-function emptyTool() { return { name: "", code: "", value: "", obraId: "", photos: [] }; }
+function emptyTool() { return { name: "", code: "", brand: "", model: "", value: "", obraId: "", photos: [] }; }
 function emptyObra() { return { name: "", engenheiro: "", mestre: "" }; }
 function emptyRented() { return { name: "", dailyValue: "", rentalPlace: "", obraId: "" }; }
 function emptyMaintenance() { return { place: "", value: "", expectedDelivery: "" }; }
@@ -922,6 +930,7 @@ async function loadData() {
       needsSeed = true;
     }
   } catch (e) {
+    console.error("Falha ao carregar do Supabase (se a mensagem nao for 'not found', ha um problema de conexao/configuracao):", e);
     needsSeed = true;
   } finally {
     if (needsSeed) {
@@ -961,7 +970,9 @@ async function persist() {
     );
     if (!result) throw new Error("sem resultado");
   } catch (e) {
-    S.error = "Não foi possível salvar. Tente novamente.";
+    console.error("Falha ao salvar no Supabase:", e);
+    const detail = (e && (e.message || e.details || e.hint)) ? ` (${e.message || e.details || e.hint})` : "";
+    S.error = `Não foi possível salvar. Tente novamente.${detail}`;
   } finally {
     S.saving = false;
     render();
@@ -982,6 +993,8 @@ function addTool() {
     id: uid(),
     name,
     code: S.newTool.code.trim(),
+    brand: S.newTool.brand.trim(),
+    model: S.newTool.model.trim(),
     value: parseDecimalInput(S.newTool.value),
     obraId: S.newTool.obraId || null,
     photos: S.newTool.photos,
@@ -1256,7 +1269,13 @@ function saveEditMaintenance() {
 function openToolDetail(toolId) {
   const tool = S.tools.find((t) => t.id === toolId);
   S.toolDetail = tool;
-  S.toolEditForm = { name: tool.name, value: tool.value != null ? String(tool.value) : "", obraId: tool.obraId || "" };
+  S.toolEditForm = {
+    name: tool.name,
+    brand: tool.brand || "",
+    model: tool.model || "",
+    value: tool.value != null ? String(tool.value) : "",
+    obraId: tool.obraId || "",
+  };
   S.error = "";
   render();
 }
@@ -1265,6 +1284,8 @@ function saveToolDetail() {
   const tool = S.toolDetail;
   const newName = S.toolEditForm.name.trim();
   if (!newName) { S.error = "O nome da ferramenta não pode ficar vazio."; render(); return; }
+  const newBrand = S.toolEditForm.brand.trim();
+  const newModel = S.toolEditForm.model.trim();
   const newValue = parseDecimalInput(S.toolEditForm.value);
   const newObraId = S.toolEditForm.obraId || null;
 
@@ -1273,6 +1294,12 @@ function saveToolDetail() {
     events.push({
       toolId: tool.id, toolName: newName, toolCode: tool.code, obraId: newObraId, type: "edicao",
       description: `Nome alterado de "${tool.name}" para "${newName}"`,
+    });
+  }
+  if (newBrand !== (tool.brand || "") || newModel !== (tool.model || "")) {
+    events.push({
+      toolId: tool.id, toolName: newName, toolCode: tool.code, obraId: newObraId, type: "edicao",
+      description: `Marca/modelo atualizados para "${[newBrand, newModel].filter(Boolean).join(" ") || "vazio"}"`,
     });
   }
   if (newValue !== tool.value) {
@@ -1299,6 +1326,8 @@ function saveToolDetail() {
   }
 
   tool.name = newName;
+  tool.brand = newBrand;
+  tool.model = newModel;
   tool.value = newValue;
   tool.obraId = newObraId;
   events.forEach(logHistory);
@@ -1500,6 +1529,10 @@ function toolById() {
   for (const t of S.tools) map[t.id] = t;
   return map;
 }
+function toolHistory(toolId) {
+  return S.history.filter((h) => h.toolId === toolId);
+}
+
 function maintenanceRows() {
   return [...S.maintenances].sort((a, b) => {
     if (!a.endDate && b.endDate) return -1;
@@ -1518,7 +1551,10 @@ function filteredRows() {
     .map((t) => ({ tool: t, loan: alb[t.id] || null }))
     .filter(({ tool }) => {
       const q = S.search.trim().toLowerCase();
-      return !q || tool.name.toLowerCase().includes(q);
+      if (!q) return true;
+      return tool.name.toLowerCase().includes(q)
+        || (tool.brand || "").toLowerCase().includes(q)
+        || (tool.model || "").toLowerCase().includes(q);
     })
     .filter(({ tool }) => {
       const q = S.codeFilter.trim().toLowerCase();
@@ -1881,6 +1917,7 @@ function toolCardHtml(tool, loan, maintenance, obMap, user) {
         <div class="tag-main">
           <div class="tag-name-clickable" data-action="openToolDetail" data-id="${tool.id}">${escapeHtml(tool.name)}</div>
           <div class="tag-meta-row">
+            ${(tool.brand || tool.model) ? `<span class="tag-code">${escapeHtml([tool.brand, tool.model].filter(Boolean).join(" "))}</span>` : ""}
             ${tool.code ? `<span class="tag-code">#${escapeHtml(tool.code)}</span>` : ""}
             ${tool.value != null ? `<span class="tag-value">${formatMoney(tool.value)}</span>` : ""}
             ${tool.obraId && obMap[tool.obraId] ? `<span class="tag-obra">${escapeHtml(obMap[tool.obraId].name)}</span>` : ""}
@@ -1927,7 +1964,7 @@ function renderProprias() {
     </header>
 
     <div class="toolbar">
-      <input id="proprias-search" type="text" class="search-input" placeholder="Buscar por nome" data-bind="search" value="${escapeAttr(S.search)}" />
+      <input id="proprias-search" type="text" class="search-input" placeholder="Buscar por nome, marca ou modelo" data-bind="search" value="${escapeAttr(S.search)}" />
       <div class="filter-group">
         ${filterButtons.map(([key, label]) => `
           <button class="${S.filter === key ? "filter-btn-active" : "filter-btn"}" data-action="setFilter" data-id="${key}">${label}</button>
@@ -1974,6 +2011,10 @@ function renderAddToolForm() {
         <input type="text" class="text-input" placeholder="Nome da ferramenta (ex: Furadeira Bosch)" id="new-tool-name" data-bind="newTool.name" value="${escapeAttr(S.newTool.name)}" />
         <input type="text" class="text-input" style="max-width:180px" placeholder="Código / etiqueta (opcional)" id="new-tool-code" data-bind="newTool.code" value="${escapeAttr(S.newTool.code)}" />
         <input type="text" inputmode="decimal" class="text-input" style="max-width:140px" placeholder="Valor (R$)" id="new-tool-value" data-bind="newTool.value" value="${escapeAttr(S.newTool.value)}" />
+      </div>
+      <div class="inline-card-row">
+        <input type="text" class="text-input" placeholder="Marca (opcional)" id="new-tool-brand" data-bind="newTool.brand" value="${escapeAttr(S.newTool.brand)}" />
+        <input type="text" class="text-input" placeholder="Modelo (opcional)" id="new-tool-model" data-bind="newTool.model" value="${escapeAttr(S.newTool.model)}" />
       </div>
       <div class="inline-card-row">
         <select class="select-input" id="new-tool-obra" data-bind="newTool.obraId">
@@ -2423,9 +2464,10 @@ function renderModals() {
     const alb = activeLoanByTool();
     const canEditTool = canDo(S.currentUser, "proprias", "editTool");
     const disabledAttr = canEditTool ? "" : "disabled";
+    const toolEvents = toolHistory(S.toolDetail.id);
     html += `
       <div class="modal-overlay" data-action="closeToolDetail">
-        <div class="modal" data-stop="1">
+        <div class="modal modal-wide" data-stop="1">
           <div class="modal-title">Detalhes da ferramenta</div>
           ${S.toolDetail.photos && S.toolDetail.photos.length > 0 ? `
             <div class="preview-photos" style="margin-bottom:12px">
@@ -2434,6 +2476,10 @@ function renderModals() {
           ` : ""}
           <label class="modal-label">Nome</label>
           <input type="text" class="text-input" id="detail-name" data-bind="toolEditForm.name" value="${escapeAttr(S.toolEditForm.name)}" ${disabledAttr} />
+          <label class="modal-label" style="margin-top:10px">Marca</label>
+          <input type="text" class="text-input" id="detail-brand" data-bind="toolEditForm.brand" value="${escapeAttr(S.toolEditForm.brand)}" ${disabledAttr} />
+          <label class="modal-label" style="margin-top:10px">Modelo</label>
+          <input type="text" class="text-input" id="detail-model" data-bind="toolEditForm.model" value="${escapeAttr(S.toolEditForm.model)}" ${disabledAttr} />
           <label class="modal-label" style="margin-top:10px">Valor (R$)</label>
           <input type="text" inputmode="decimal" class="text-input" id="detail-value" data-bind="toolEditForm.value" value="${escapeAttr(S.toolEditForm.value)}" ${disabledAttr} />
           <label class="modal-label" style="margin-top:10px">Obra</label>
@@ -2445,6 +2491,26 @@ function renderModals() {
             ${S.toolDetail.code ? `<span class="tag-code">Código: #${escapeHtml(S.toolDetail.code)}</span>` : "<span></span>"}
             <span class="${alb[S.toolDetail.id] ? "status-loaned-title" : "status-available"}">${alb[S.toolDetail.id] ? `Alocada com ${escapeHtml(alb[S.toolDetail.id].borrower)}` : "Disponível"}</span>
           </div>
+
+          <div class="detail-history-section">
+            <div class="detail-history-title">Histórico desta ferramenta</div>
+            ${toolEvents.length === 0 ? `
+              <div class="hint-text">Nenhum evento registrado ainda para esta ferramenta.</div>
+            ` : `
+              <div class="detail-history-list">
+                ${toolEvents.map((h) => `
+                  <div class="detail-history-item">
+                    <div class="history-badge ${historyBadgeClass(h.type)}">${historyLabel(h.type)}</div>
+                    <div class="detail-history-body">
+                      <div class="history-description">${escapeHtml(h.description)}</div>
+                      <div class="history-date">${formatDate(h.date)}</div>
+                    </div>
+                  </div>
+                `).join("")}
+              </div>
+            `}
+          </div>
+
           ${S.error ? `<div class="modal-error">${escapeHtml(S.error)}</div>` : ""}
           <div class="inline-card-actions">
             <button class="ghost-btn" data-action="closeToolDetail">${canEditTool ? "Cancelar" : "Fechar"}</button>
