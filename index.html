@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root {
     --bg: #DADAEE;
@@ -507,6 +508,42 @@
 </head>
 <body>
 <div id="app"></div>
+
+<script>
+/* =========================================================
+   CONFIGURACAO DO SUPABASE
+   Preencha as duas linhas abaixo com os dados do seu projeto:
+   Project Settings > API > Project URL / anon public key
+   ========================================================= */
+const SUPABASE_URL = "https://krpkyafgpibzwefgklqj.supabase.co/rest/v1/";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtycGt5YWZncGliendlZmdrbHFqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0OTg0OTYsImV4cCI6MjEwNDA3NDQ5Nn0.RPIussEuWMudcYqepKFbhiOma0GMZkwwy5yNlKMhukU";
+
+const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Camada de compatibilidade: mantem a mesma interface que o app ja usa
+// (window.storage.get / window.storage.set), so que agora conversando
+// com uma tabela do Supabase em vez do armazenamento interno do Claude.
+window.storage = {
+  async get(key, shared) {
+    const { data, error } = await _sb
+      .from("app_data")
+      .select("value")
+      .eq("key", key)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new Error("not found");
+    return { key, value: JSON.stringify(data.value), shared };
+  },
+  async set(key, value, shared) {
+    const parsed = JSON.parse(value);
+    const { error } = await _sb
+      .from("app_data")
+      .upsert({ key, value: parsed, updated_at: new Date().toISOString() });
+    if (error) throw error;
+    return { key, value, shared };
+  },
+};
+</script>
 
 <script>
 /* =========================================================
