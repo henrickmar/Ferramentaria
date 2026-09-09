@@ -260,6 +260,14 @@
     font-size: 14px;
     outline: none;
   }
+  .textarea-input {
+    width: 100%;
+    min-height: 70px;
+    resize: vertical;
+    font-family: 'Inter', sans-serif;
+    display: block;
+    margin-bottom: 10px;
+  }
   .select-input {
     flex: 1 1 200px;
     padding: 10px 12px;
@@ -324,7 +332,8 @@
   .tag-obra { font-size: 12px; color: var(--ink); background: #E9E9F5; padding: 2px 8px; border-radius: 3px; font-weight: 500; }
 
   .card-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; border: 1.5px solid var(--border); flex-shrink: 0; cursor: pointer; }
-  .card-thumb-placeholder { width: 48px; height: 48px; border-radius: 4px; border: 1.5px dashed var(--border); flex-shrink: 0; background: var(--bg); }
+  .card-thumb-placeholder { width: 48px; height: 48px; border-radius: 4px; border: 1.5px dashed var(--border); flex-shrink: 0; background: var(--bg); cursor: pointer; }
+  .card-thumb-placeholder:hover { border-color: var(--accent); }
 
   .photo-section { margin-top: 2px; }
   .photo-row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -864,7 +873,7 @@ function firstAccessiblePage(user) {
 /* =========================================================
    Estado
    ========================================================= */
-function emptyTool() { return { name: "", code: "", brand: "", model: "", value: "", obraId: "", photos: [] }; }
+function emptyTool() { return { name: "", code: "", brand: "", model: "", value: "", obraId: "", photos: [], notes: "" }; }
 function emptyObra() { return { name: "", engenheiro: "", mestre: "" }; }
 function emptyRented() { return { name: "", dailyValue: "", rentalPlace: "", obraId: "" }; }
 function emptyMaintenance() { return { place: "", value: "", expectedDelivery: "" }; }
@@ -998,6 +1007,7 @@ function addTool() {
     value: parseDecimalInput(S.newTool.value),
     obraId: S.newTool.obraId || null,
     photos: S.newTool.photos,
+    notes: S.newTool.notes.trim(),
     createdAt: new Date().toISOString().slice(0, 10),
   };
   S.tools.push(tool);
@@ -1275,6 +1285,7 @@ function openToolDetail(toolId) {
     model: tool.model || "",
     value: tool.value != null ? String(tool.value) : "",
     obraId: tool.obraId || "",
+    notes: tool.notes || "",
   };
   S.error = "";
   render();
@@ -1288,6 +1299,7 @@ function saveToolDetail() {
   const newModel = S.toolEditForm.model.trim();
   const newValue = parseDecimalInput(S.toolEditForm.value);
   const newObraId = S.toolEditForm.obraId || null;
+  const newNotes = S.toolEditForm.notes.trim();
 
   const events = [];
   if (newName !== tool.name) {
@@ -1307,6 +1319,12 @@ function saveToolDetail() {
       toolId: tool.id, toolName: newName, toolCode: tool.code, obraId: newObraId, type: "edicao",
       description: (tool.value != null ? `Valor alterado de ${formatMoney(tool.value)}` : "Valor definido")
         + (newValue != null ? ` para ${formatMoney(newValue)}` : " para vazio"),
+    });
+  }
+  if (newNotes !== (tool.notes || "")) {
+    events.push({
+      toolId: tool.id, toolName: newName, toolCode: tool.code, obraId: newObraId, type: "edicao",
+      description: "Observação atualizada",
     });
   }
   if (newObraId !== (tool.obraId || null)) {
@@ -1330,6 +1348,7 @@ function saveToolDetail() {
   tool.model = newModel;
   tool.value = newValue;
   tool.obraId = newObraId;
+  tool.notes = newNotes;
   events.forEach(logHistory);
 
   S.toolDetail = null;
@@ -1912,7 +1931,7 @@ function toolCardHtml(tool, loan, maintenance, obMap, user) {
       <div class="punch-hole"></div>
       ${tool.photos && tool.photos.length > 0
         ? `<img src="${tool.photos[0]}" alt="${escapeAttr(tool.name)}" class="card-thumb" data-action="setPreview" data-id="${tool.id}" />`
-        : `<div class="card-thumb-placeholder"></div>`}
+        : `<div class="card-thumb-placeholder" data-action="setPreview" data-id="${tool.id}"></div>`}
       <div class="tag-body">
         <div class="tag-main">
           <div class="tag-name-clickable" data-action="openToolDetail" data-id="${tool.id}">${escapeHtml(tool.name)}</div>
@@ -2023,6 +2042,9 @@ function renderAddToolForm() {
         </select>
       </div>
       ${S.obras.length === 0 ? `<div class="hint-text">Nenhuma obra cadastrada ainda. Cadastre em "Obras" para poder vincular.</div>` : ""}
+
+      <label class="modal-label" style="margin-top:2px">Observação</label>
+      <textarea class="text-input textarea-input" id="new-tool-notes" data-bind="newTool.notes" placeholder="Alguma observação sobre a ferramenta (opcional)">${escapeHtml(S.newTool.notes)}</textarea>
 
       <div class="photo-section">
         <label class="modal-label">Fotos (até ${MAX_PHOTOS})</label>
@@ -2430,6 +2452,7 @@ function renderModals() {
                 <input type="file" accept="image/*" multiple style="display:none" data-photo-target="preview" />
               </label>
             ` : ""}
+            ${!canEditPhotos && S.preview.photos.length === 0 ? `<div class="hint-text">Nenhuma foto cadastrada ainda.</div>` : ""}
           </div>
           ${S.error ? `<div class="modal-error">${escapeHtml(S.error)}</div>` : ""}
           <div class="inline-card-actions">
@@ -2487,6 +2510,8 @@ function renderModals() {
             <option value="">Sem obra vinculada</option>
             ${S.obras.map((o) => `<option value="${o.id}" ${S.toolEditForm.obraId === o.id ? "selected" : ""}>${escapeHtml(o.name)}</option>`).join("")}
           </select>
+          <label class="modal-label" style="margin-top:10px">Observação</label>
+          <textarea class="text-input textarea-input" id="detail-notes" data-bind="toolEditForm.notes" placeholder="Alguma observação sobre a ferramenta" ${disabledAttr}>${escapeHtml(S.toolEditForm.notes)}</textarea>
           <div class="detail-readonly-row">
             ${S.toolDetail.code ? `<span class="tag-code">Código: #${escapeHtml(S.toolDetail.code)}</span>` : "<span></span>"}
             <span class="${alb[S.toolDetail.id] ? "status-loaned-title" : "status-available"}">${alb[S.toolDetail.id] ? `Alocada com ${escapeHtml(alb[S.toolDetail.id].borrower)}` : "Disponível"}</span>
