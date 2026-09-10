@@ -608,15 +608,46 @@ function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#96;");
 }
 
-function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("Falha ao ler imagem"));
-    reader.readAsDataURL(file);
-  });
-}
+const STORAGE_BUCKET = "tool-photos";
 
+async function uploadToolPhoto(file, toolId) {
+  if (!file || !file.type.startsWith("image/")) {
+    throw new Error("Selecione uma imagem válida.");
+  }
+
+  if (file.size > MAX_PHOTO_BYTES) {
+    throw new Error(`A imagem "${file.name}" é muito grande. Use fotos menores.`);
+  }
+
+  const extension = (file.name.split(".").pop() || "jpg")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+
+  const path = `tools/${toolId}/${crypto.randomUUID()}.${extension || "jpg"}`;
+
+  const { error } = await _sb.storage
+    .from(STORAGE_BUCKET)
+    .upload(path, file, {
+      cacheControl: "31536000",
+      contentType: file.type,
+      upsert: false,
+    });
+
+  if (error) {
+    console.error("Erro ao enviar foto:", error);
+    throw new Error(`Não foi possível enviar a foto: ${error.message}`);
+  }
+
+  const { data } = _sb.storage
+    .from(STORAGE_BUCKET)
+    .getPublicUrl(path);
+
+  if (!data?.publicUrl) {
+    throw new Error("Não foi possível obter a URL da foto.");
+  }
+
+  return data.publicUrl;
+}
 function exportToExcel(rows, columns, filename) {
   const data = rows.map((row) => {
     const obj = {};
@@ -873,7 +904,19 @@ function firstAccessiblePage(user) {
 /* =========================================================
    Estado
    ========================================================= */
-function emptyTool() { return { name: "", code: "", brand: "", model: "", value: "", obraId: "", photos: [], notes: "" }; }
+function emptyTool() {
+  return {
+    id: uid(),
+    name: "",
+    code: "",
+    brand: "",
+    model: "",
+    value: "",
+    obraId: "",
+    photos: [],
+    notes: ""
+  };
+}
 function emptyObra() { return { name: "", engenheiro: "", mestre: "" }; }
 function emptyRented() { return { name: "", dailyValue: "", rentalPlace: "", obraId: "" }; }
 function emptyMaintenance() { return { place: "", value: "", expectedDelivery: "" }; }
@@ -959,32 +1002,60 @@ async function loadData() {
   }
 }
 
+let persistRunning = false;
+let persistPending = false;
+
 async function persist() {
+  if (persistRunning) {
+    persistPending = true;
+    return;
+  }
+
+  persistRunning = true;
   S.saving = true;
   S.error = "";
   render();
+
   try {
+    const payload = {
+      tools: S.tools,
+      loans: S.loans,
+      obras: S.obras,
+      rentedTools: S.rentedTools,
+      history: S.history,
+      maintenances: S.maintenances,
+      users: S.users,
+    };
+
     const result = await window.storage.set(
       STORAGE_KEY,
-      JSON.stringify({
-        tools: S.tools,
-        loans: S.loans,
-        obras: S.obras,
-        rentedTools: S.rentedTools,
-        history: S.history,
-        maintenances: S.maintenances,
-        users: S.users,
-      }),
+      JSON.stringify(payload),
       true
     );
-    if (!result) throw new Error("sem resultado");
+
+    if (!result) {
+      throw new Error("Sem resultado ao salvar.");
+    }
+
   } catch (e) {
     console.error("Falha ao salvar no Supabase:", e);
-    const detail = (e && (e.message || e.details || e.hint)) ? ` (${e.message || e.details || e.hint})` : "";
+
+    const detail =
+      e && (e.message || e.details || e.hint)
+        ? ` (${e.message || e.details || e.hint})`
+        : "";
+
     S.error = `Não foi possível salvar. Tente novamente.${detail}`;
+
   } finally {
+    persistRunning = false;
     S.saving = false;
     render();
+
+    if (persistPending) {
+      persistPending = false;
+      persist();
+    }
   }
 }
 
@@ -999,7 +1070,7 @@ function addTool() {
   const name = S.newTool.name.trim();
   if (!name) { S.error = "Digite o nome da ferramenta."; render(); return; }
   const tool = {
-    id: uid(),
+    id: S.newTool.id,
     name,
     code: S.newTool.code.trim(),
     brand: S.newTool.brand.trim(),
@@ -1022,7 +1093,53 @@ function addTool() {
   S.error = "";
   persist();
 }
+const STORAGE_BUCKET = "tool-photos";
 
+async function uploadToolPhoto(file, toolId) {
+  if (!file || !file.type.startsWith("image/")) {
+    throw new Error("Selecione uma imagem válida.");
+  }
+
+  if (file.size > MAX_PHOTO_BYTES) {
+    throw new Error(
+      `A imagem "${file.name}" é muito grande. Use uma foto menor.`
+    );
+  }
+
+  const extension =
+    file.type === "image/png" ? "png" :
+    file.type === "image/webp" ? "webp" :
+    "jpg";
+
+  const path =
+    `tools/${toolId}/${crypto.randomUUID()}.${extension}`;
+
+  const { error } = await _sb.storage
+    .from(STORAGE_BUCKET)
+    .upload(path, file, {
+      contentType: file.type,
+      cacheControl: "31536000",
+      upsert: false
+    });
+
+  if (error) {
+    console.error("Erro ao enviar foto:", error);
+    throw new Error(
+      `Não foi possível enviar a foto: ${error.message}`
+    );
+  }
+
+  const { data } = _sb.storage
+    .from(STORAGE_BUCKET)
+    .getPublicUrl(path);
+
+  if (!data?.publicUrl) {
+    throw new Error("Não foi possível obter a URL da foto.");
+  }
+
+  return data.publicUrl;
+}
+  
 async function handlePhotoSelect(input) {
   const target = input.getAttribute("data-photo-target");
   const indexAttr = input.getAttribute("data-photo-index");
@@ -1046,8 +1163,12 @@ async function handlePhotoSelect(input) {
     S.photoLoading = true;
     render();
     try {
-      const url = await fileToDataUrl(file);
-      S.preview.photos[Number(indexAttr)] = url;
+      const url = await uploadToolPhoto(
+  file,
+  S.preview.id
+);
+
+S.preview.photos[Number(indexAttr)] = url;
       S.error = "";
       S.photoLoading = false;
       persist();
@@ -1087,8 +1208,14 @@ async function handlePhotoSelect(input) {
         S.error = `A imagem "${file.name}" é muito grande. Use fotos menores.`;
         continue;
       }
-      const url = await fileToDataUrl(file);
-      photosArray.push(url);
+      const toolId = isPreview ? S.preview.id : (S.newTool.id || uid());
+
+if (!isPreview && !S.newTool.id) {
+  S.newTool.id = toolId;
+}
+
+const url = await uploadToolPhoto(file, toolId);
+photosArray.push(url);
     }
     if (isPreview) {
       S.preview.photos = S.preview.photos.slice(0, MAX_PHOTOS);
