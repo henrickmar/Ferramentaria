@@ -551,6 +551,18 @@ window.storage = {
     if (!data) throw new Error("not found");
     return { key, value: JSON.stringify(data.value), shared };
   },
+  // Busca varias chaves em uma unica requisicao (mais rapido que uma por uma).
+  // Retorna um objeto { chave: valor_em_json_string } so com as chaves que existem.
+  async getMany(keys) {
+    const { data, error } = await _sb
+      .from("app_data")
+      .select("key,value")
+      .in("key", keys);
+    if (error) throw error;
+    const map = {};
+    (data || []).forEach((row) => { map[row.key] = JSON.stringify(row.value); });
+    return map;
+  },
   async set(key, value, shared) {
     const parsed = JSON.parse(value);
     const { error } = await _sb
@@ -560,15 +572,64 @@ window.storage = {
     return { key, value, shared };
   },
 };
+
+/* =========================================================
+   Armazenamento de fotos (Supabase Storage)
+   As fotos NAO ficam mais em base64 dentro do banco de dados:
+   sao enviadas como arquivo para o bucket abaixo, e so o link
+   (URL publica) fica salvo junto com a ferramenta.
+   ========================================================= */
+const PHOTOS_BUCKET = "tool-photos";
+
+window.fileStorage = {
+  async upload(file, folderPrefix) {
+    const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+    const path = `${folderPrefix}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
+    const { error } = await _sb.storage.from(PHOTOS_BUCKET).upload(path, file, {
+      contentType: file.type || undefined,
+    });
+    if (error) throw error;
+    const { data } = _sb.storage.from(PHOTOS_BUCKET).getPublicUrl(path);
+    return { url: data.publicUrl, path };
+  },
+  async remove(path) {
+    if (!path) return;
+    try {
+      await _sb.storage.from(PHOTOS_BUCKET).remove([path]);
+    } catch (e) {
+      console.error("Falha ao remover foto antiga do storage:", e);
+    }
+  },
+  extractPath(url) {
+    if (!url || typeof url !== "string") return null;
+    const marker = `/storage/v1/object/public/${PHOTOS_BUCKET}/`;
+    const idx = url.indexOf(marker);
+    if (idx === -1) return null;
+    try {
+      return decodeURIComponent(url.slice(idx + marker.length));
+    } catch (e) {
+      return null;
+    }
+  },
+};
 </script>
 
 <script>
 /* =========================================================
    Utilidades
    ========================================================= */
-const STORAGE_KEY = "controle-ferramentas:dados";
+const OLD_STORAGE_KEY = "controle-ferramentas:dados";
+const SLICE_KEYS = {
+  tools: "controle-ferramentas:tools",
+  loans: "controle-ferramentas:loans",
+  obras: "controle-ferramentas:obras",
+  rentedTools: "controle-ferramentas:rentedTools",
+  history: "controle-ferramentas:history",
+  maintenances: "controle-ferramentas:maintenances",
+  users: "controle-ferramentas:users",
+};
 const MAX_PHOTOS = 3;
-const MAX_PHOTO_BYTES = 900000;
+const MAX_PHOTO_BYTES = 5000000;
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -606,15 +667,6 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#96;");
-}
-
-function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("Falha ao ler imagem"));
-    reader.readAsDataURL(file);
-  });
 }
 
 function exportToExcel(rows, columns, filename) {
@@ -923,21 +975,42 @@ const S = {
    ========================================================= */
 async function loadData() {
   let needsSeed = false;
+  let migratedFromOld = false;
   try {
-    const res = await window.storage.get(STORAGE_KEY, true);
-    if (res && res.value) {
-      const data = JSON.parse(res.value);
-      S.tools = data.tools || [];
-      S.loans = data.loans || [];
-      S.obras = data.obras || [];
-      S.rentedTools = data.rentedTools || [];
-      S.history = data.history || [];
-      S.maintenances = data.maintenances || [];
-      S.users = data.users || [];
-      if (S.users.length === 0) needsSeed = true;
+    const keys = Object.values(SLICE_KEYS);
+    const map = await window.storage.getMany(keys);
+    const hasAnyNewData = keys.some((k) => map[k] !== undefined);
+
+    if (hasAnyNewData) {
+      S.tools = map[SLICE_KEYS.tools] ? JSON.parse(map[SLICE_KEYS.tools]) : [];
+      S.loans = map[SLICE_KEYS.loans] ? JSON.parse(map[SLICE_KEYS.loans]) : [];
+      S.obras = map[SLICE_KEYS.obras] ? JSON.parse(map[SLICE_KEYS.obras]) : [];
+      S.rentedTools = map[SLICE_KEYS.rentedTools] ? JSON.parse(map[SLICE_KEYS.rentedTools]) : [];
+      S.history = map[SLICE_KEYS.history] ? JSON.parse(map[SLICE_KEYS.history]) : [];
+      S.maintenances = map[SLICE_KEYS.maintenances] ? JSON.parse(map[SLICE_KEYS.maintenances]) : [];
+      S.users = map[SLICE_KEYS.users] ? JSON.parse(map[SLICE_KEYS.users]) : [];
     } else {
-      needsSeed = true;
+      // Ainda nao existe nenhum dado no formato novo (chaves separadas).
+      // Tenta migrar do formato antigo (um unico registro com tudo junto).
+      try {
+        const old = await window.storage.get(OLD_STORAGE_KEY, true);
+        if (old && old.value) {
+          const data = JSON.parse(old.value);
+          S.tools = data.tools || [];
+          S.loans = data.loans || [];
+          S.obras = data.obras || [];
+          S.rentedTools = data.rentedTools || [];
+          S.history = data.history || [];
+          S.maintenances = data.maintenances || [];
+          S.users = data.users || [];
+          migratedFromOld = true;
+        }
+      } catch (e2) {
+        // sem dados antigos tambem - banco realmente vazio, segue para o seed abaixo
+      }
     }
+
+    if (S.users.length === 0) needsSeed = true;
   } catch (e) {
     console.error("Falha ao carregar do Supabase (se a mensagem nao for 'not found', ha um problema de conexao/configuracao):", e);
     needsSeed = true;
@@ -955,29 +1028,27 @@ async function loadData() {
     }
     S.loaded = true;
     render();
-    if (needsSeed) persist();
+    if (migratedFromOld) {
+      // Migracao unica: grava tudo no novo formato (chaves separadas).
+      // So acontece uma vez, entao nao ha problema em salvar tudo de uma vez aqui.
+      persist("tools", "loans", "obras", "rentedTools", "history", "maintenances", "users");
+    } else if (needsSeed) {
+      persist("users");
+    }
   }
 }
 
-async function persist() {
+async function persist(...slices) {
   S.saving = true;
   S.error = "";
   render();
   try {
-    const result = await window.storage.set(
-      STORAGE_KEY,
-      JSON.stringify({
-        tools: S.tools,
-        loans: S.loans,
-        obras: S.obras,
-        rentedTools: S.rentedTools,
-        history: S.history,
-        maintenances: S.maintenances,
-        users: S.users,
-      }),
-      true
+    const results = await Promise.all(
+      slices.map((sliceName) =>
+        window.storage.set(SLICE_KEYS[sliceName], JSON.stringify(S[sliceName]), true)
+      )
     );
-    if (!result) throw new Error("sem resultado");
+    if (results.some((r) => !r)) throw new Error("sem resultado");
   } catch (e) {
     console.error("Falha ao salvar no Supabase:", e);
     const detail = (e && (e.message || e.details || e.hint)) ? ` (${e.message || e.details || e.hint})` : "";
@@ -1020,7 +1091,7 @@ function addTool() {
   S.newTool = emptyTool();
   S.showAddTool = false;
   S.error = "";
-  persist();
+  persist("tools", "history");
 }
 
 async function handlePhotoSelect(input) {
@@ -1030,13 +1101,16 @@ async function handlePhotoSelect(input) {
   input.value = "";
   if (!files.length) return;
 
+  const isPreview = target === "preview";
+  if (isPreview && !canDo(S.currentUser, "proprias", "editTool")) {
+    S.error = "Você não tem permissão para essa ação.";
+    render();
+    return;
+  }
+  const folderPrefix = isPreview ? S.preview.id : "novas-ferramentas";
+
   // Troca direta de uma foto especifica de uma ferramenta ja existente
-  if (target === "preview" && indexAttr !== null) {
-    if (!canDo(S.currentUser, "proprias", "editTool")) {
-      S.error = "Você não tem permissão para essa ação.";
-      render();
-      return;
-    }
+  if (isPreview && indexAttr !== null) {
     const file = files[0];
     if (file.size > MAX_PHOTO_BYTES) {
       S.error = `A imagem "${file.name}" é muito grande. Use fotos menores.`;
@@ -1046,12 +1120,16 @@ async function handlePhotoSelect(input) {
     S.photoLoading = true;
     render();
     try {
-      const url = await fileToDataUrl(file);
-      S.preview.photos[Number(indexAttr)] = url;
+      const oldUrl = S.preview.photos[Number(indexAttr)];
+      const uploaded = await window.fileStorage.upload(file, folderPrefix);
+      S.preview.photos[Number(indexAttr)] = uploaded.url;
       S.error = "";
       S.photoLoading = false;
-      persist();
+      persist("tools");
+      const oldPath = window.fileStorage.extractPath(oldUrl);
+      if (oldPath) window.fileStorage.remove(oldPath);
     } catch (e) {
+      console.error("Falha ao enviar foto:", e);
       S.error = "Não foi possível carregar a imagem.";
       S.photoLoading = false;
       render();
@@ -1060,12 +1138,6 @@ async function handlePhotoSelect(input) {
   }
 
   // Adicionar novas fotos (cadastro de ferramenta OU ferramenta ja existente)
-  const isPreview = target === "preview";
-  if (isPreview && !canDo(S.currentUser, "proprias", "editTool")) {
-    S.error = "Você não tem permissão para essa ação.";
-    render();
-    return;
-  }
   const photosArray = isPreview ? S.preview.photos : S.newTool.photos;
   const remaining = MAX_PHOTOS - photosArray.length;
   if (remaining <= 0) {
@@ -1087,8 +1159,8 @@ async function handlePhotoSelect(input) {
         S.error = `A imagem "${file.name}" é muito grande. Use fotos menores.`;
         continue;
       }
-      const url = await fileToDataUrl(file);
-      photosArray.push(url);
+      const uploaded = await window.fileStorage.upload(file, folderPrefix);
+      photosArray.push(uploaded.url);
     }
     if (isPreview) {
       S.preview.photos = S.preview.photos.slice(0, MAX_PHOTOS);
@@ -1096,11 +1168,12 @@ async function handlePhotoSelect(input) {
       S.newTool.photos = S.newTool.photos.slice(0, MAX_PHOTOS);
     }
   } catch (e) {
+    console.error("Falha ao enviar foto:", e);
     S.error = "Não foi possível carregar uma das imagens.";
   } finally {
     S.photoLoading = false;
     if (isPreview) {
-      persist();
+      persist("tools");
     } else {
       render();
     }
@@ -1108,8 +1181,12 @@ async function handlePhotoSelect(input) {
 }
 
 function removeNewPhoto(index) {
-  S.newTool.photos = S.newTool.photos.filter((_, i) => i !== index);
+  const idx = Number(index);
+  const removedUrl = S.newTool.photos[idx];
+  S.newTool.photos = S.newTool.photos.filter((_, i) => i !== idx);
   render();
+  const path = window.fileStorage.extractPath(removedUrl);
+  if (path) window.fileStorage.remove(path);
 }
 
 function removePreviewPhoto(index) {
@@ -1118,12 +1195,16 @@ function removePreviewPhoto(index) {
     render();
     return;
   }
-  S.preview.photos = S.preview.photos.filter((_, i) => i !== Number(index));
+  const idx = Number(index);
+  const removedUrl = S.preview.photos[idx];
+  S.preview.photos = S.preview.photos.filter((_, i) => i !== idx);
   if (S.lightbox && S.lightbox.source === "preview") {
     if (S.preview.photos.length === 0) S.lightbox = null;
     else if (S.lightbox.index >= S.preview.photos.length) S.lightbox.index = S.preview.photos.length - 1;
   }
-  persist();
+  persist("tools");
+  const path = window.fileStorage.extractPath(removedUrl);
+  if (path) window.fileStorage.remove(path);
 }
 
 /* =========================================================
@@ -1167,7 +1248,13 @@ function removeTool(toolId) {
     toolId, toolName: tool ? tool.name : "", toolCode: tool ? tool.code : "", obraId: tool ? tool.obraId : null,
     type: "remocao", description: "Ferramenta removida do cadastro",
   });
-  persist();
+  persist("tools", "history");
+  if (tool && tool.photos) {
+    tool.photos.forEach((url) => {
+      const path = window.fileStorage.extractPath(url);
+      if (path) window.fileStorage.remove(path);
+    });
+  }
 }
 
 function openLoanModal(toolId) {
@@ -1191,7 +1278,7 @@ function confirmLoan() {
   });
   S.loanModal = null;
   S.error = "";
-  persist();
+  persist("loans", "history");
 }
 
 function returnTool(loanId) {
@@ -1202,7 +1289,7 @@ function returnTool(loanId) {
     toolId: loan.toolId, toolName: tool ? tool.name : "", toolCode: tool ? tool.code : "", obraId: tool ? tool.obraId : null,
     type: "devolucao", description: `Devolvida por ${loan.borrower || "desconhecido"}`,
   });
-  persist();
+  persist("loans", "history");
 }
 
 function openMaintenanceModal(toolId) {
@@ -1232,7 +1319,7 @@ function confirmMaintenance() {
   });
   S.maintenanceModal = null;
   S.error = "";
-  persist();
+  persist("maintenances", "history");
 }
 
 function concludeMaintenance(maintenanceId) {
@@ -1243,12 +1330,12 @@ function concludeMaintenance(maintenanceId) {
     toolId: record.toolId, toolName: tool ? tool.name : "", toolCode: tool ? tool.code : "", obraId: tool ? tool.obraId : null,
     type: "manutencao_fim", description: `Retornou da manutenção em ${record.place || "local desconhecido"}`,
   });
-  persist();
+  persist("maintenances", "history");
 }
 
 function removeMaintenance(maintenanceId) {
   S.maintenances = S.maintenances.filter((m) => m.id !== maintenanceId);
-  persist();
+  persist("maintenances");
 }
 
 function openEditMaintenance(maintenanceId) {
@@ -1273,7 +1360,7 @@ function saveEditMaintenance() {
   S.editMaintenance = null;
   S.editMaintenanceForm = null;
   S.error = "";
-  persist();
+  persist("maintenances");
 }
 
 function openToolDetail(toolId) {
@@ -1354,7 +1441,7 @@ function saveToolDetail() {
   S.toolDetail = null;
   S.toolEditForm = null;
   S.error = "";
-  persist();
+  persist("tools", "history");
 }
 
 /* =========================================================
@@ -1367,12 +1454,12 @@ function addObra() {
   S.newObra = emptyObra();
   S.showAddObra = false;
   S.error = "";
-  persist();
+  persist("obras");
 }
 
 function removeObra(obraId) {
   S.obras = S.obras.filter((o) => o.id !== obraId);
-  persist();
+  persist("obras");
 }
 
 /* =========================================================
@@ -1390,12 +1477,12 @@ function addRentedTool() {
   S.newRented = emptyRented();
   S.showAddRented = false;
   S.error = "";
-  persist();
+  persist("rentedTools");
 }
 
 function removeRentedTool(rentedId) {
   S.rentedTools = S.rentedTools.filter((r) => r.id !== rentedId);
-  persist();
+  persist("rentedTools");
 }
 
 /* =========================================================
@@ -1454,7 +1541,7 @@ function addUser() {
   S.newUser = emptyUser();
   S.showAddUser = false;
   S.error = "";
-  persist();
+  persist("users");
 }
 
 function removeUser(userId) {
@@ -1473,7 +1560,7 @@ function removeUser(userId) {
   }
   S.users = S.users.filter((u) => u.id !== userId);
   S.error = "";
-  persist();
+  persist("users");
 }
 
 function openEditUser(userId) {
@@ -1522,7 +1609,7 @@ function saveEditUser() {
   S.editUser = null;
   S.editUserForm = null;
   S.error = "";
-  persist();
+  persist("users");
 }
 
 /* =========================================================
@@ -2714,7 +2801,14 @@ function handleAction(action, id, btn) {
     case "saveEditUser": saveEditUser(); break;
     case "setFilter": S.filter = id; render(); break;
     case "toggleAddTool": S.showAddTool = true; S.error = ""; render(); break;
-    case "cancelAddTool": S.showAddTool = false; S.newTool = emptyTool(); S.error = ""; render(); break;
+    case "cancelAddTool": {
+      S.newTool.photos.forEach((url) => {
+        const path = window.fileStorage.extractPath(url);
+        if (path) window.fileStorage.remove(path);
+      });
+      S.showAddTool = false; S.newTool = emptyTool(); S.error = ""; render();
+      break;
+    }
     case "addTool": addTool(); break;
     case "removeNewPhoto": removeNewPhoto(Number(id)); break;
     case "removeTool": removeTool(id); break;
