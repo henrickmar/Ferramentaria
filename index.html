@@ -868,6 +868,7 @@ const PAGE_ACTIONS = {
   ],
   obras: [
     { key: "add", label: "Cadastrar obra" },
+    { key: "edit", label: "Editar obra" },
     { key: "remove", label: "Remover obra" },
   ],
   historico: [],
@@ -933,6 +934,7 @@ function emptyUser() { return { username: "", password: "", name: "", isAdmin: f
 
 const S = {
   loaded: false,
+  loadError: "",
   saving: false,
   error: "",
   page: "proprias",
@@ -952,6 +954,7 @@ const S = {
   toolDetail: null, toolEditForm: null,
 
   showAddObra: false, newObra: emptyObra(),
+  editObra: null, editObraForm: null,
   showAddRented: false, newRented: emptyRented(),
 
   historySearch: "", historyCodeFilter: "", historyObraFilter: "", historyDateFrom: "", historyDateTo: "",
@@ -973,68 +976,92 @@ const S = {
 /* =========================================================
    Persistencia
    ========================================================= */
-async function loadData() {
-  let needsSeed = false;
-  let migratedFromOld = false;
-  try {
-    const keys = Object.values(SLICE_KEYS);
-    const map = await window.storage.getMany(keys);
-    const hasAnyNewData = keys.some((k) => map[k] !== undefined);
+async function loadDataAttempt() {
+  const keys = Object.values(SLICE_KEYS);
+  const map = await window.storage.getMany(keys);
+  const hasAnyNewData = keys.some((k) => map[k] !== undefined);
 
-    if (hasAnyNewData) {
-      S.tools = map[SLICE_KEYS.tools] ? JSON.parse(map[SLICE_KEYS.tools]) : [];
-      S.loans = map[SLICE_KEYS.loans] ? JSON.parse(map[SLICE_KEYS.loans]) : [];
-      S.obras = map[SLICE_KEYS.obras] ? JSON.parse(map[SLICE_KEYS.obras]) : [];
-      S.rentedTools = map[SLICE_KEYS.rentedTools] ? JSON.parse(map[SLICE_KEYS.rentedTools]) : [];
-      S.history = map[SLICE_KEYS.history] ? JSON.parse(map[SLICE_KEYS.history]) : [];
-      S.maintenances = map[SLICE_KEYS.maintenances] ? JSON.parse(map[SLICE_KEYS.maintenances]) : [];
-      S.users = map[SLICE_KEYS.users] ? JSON.parse(map[SLICE_KEYS.users]) : [];
-    } else {
-      // Ainda nao existe nenhum dado no formato novo (chaves separadas).
-      // Tenta migrar do formato antigo (um unico registro com tudo junto).
-      try {
-        const old = await window.storage.get(OLD_STORAGE_KEY, true);
-        if (old && old.value) {
-          const data = JSON.parse(old.value);
-          S.tools = data.tools || [];
-          S.loans = data.loans || [];
-          S.obras = data.obras || [];
-          S.rentedTools = data.rentedTools || [];
-          S.history = data.history || [];
-          S.maintenances = data.maintenances || [];
-          S.users = data.users || [];
-          migratedFromOld = true;
-        }
-      } catch (e2) {
-        // sem dados antigos tambem - banco realmente vazio, segue para o seed abaixo
+  if (hasAnyNewData) {
+    S.tools = map[SLICE_KEYS.tools] ? JSON.parse(map[SLICE_KEYS.tools]) : [];
+    S.loans = map[SLICE_KEYS.loans] ? JSON.parse(map[SLICE_KEYS.loans]) : [];
+    S.obras = map[SLICE_KEYS.obras] ? JSON.parse(map[SLICE_KEYS.obras]) : [];
+    S.rentedTools = map[SLICE_KEYS.rentedTools] ? JSON.parse(map[SLICE_KEYS.rentedTools]) : [];
+    S.history = map[SLICE_KEYS.history] ? JSON.parse(map[SLICE_KEYS.history]) : [];
+    S.maintenances = map[SLICE_KEYS.maintenances] ? JSON.parse(map[SLICE_KEYS.maintenances]) : [];
+    S.users = map[SLICE_KEYS.users] ? JSON.parse(map[SLICE_KEYS.users]) : [];
+    return "loaded";
+  }
+
+  // Ainda nao existe nenhum dado no formato novo (chaves separadas).
+  // Tenta migrar do formato antigo (um unico registro com tudo junto).
+  try {
+    const old = await window.storage.get(OLD_STORAGE_KEY, true);
+    if (old && old.value) {
+      const data = JSON.parse(old.value);
+      S.tools = data.tools || [];
+      S.loans = data.loans || [];
+      S.obras = data.obras || [];
+      S.rentedTools = data.rentedTools || [];
+      S.history = data.history || [];
+      S.maintenances = data.maintenances || [];
+      S.users = data.users || [];
+      return "migrated";
+    }
+  } catch (e2) {
+    // sem dados antigos tambem - banco realmente vazio
+  }
+  return "empty";
+}
+
+async function loadData() {
+  const maxAttempts = 3;
+  let status = null;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      status = await loadDataAttempt();
+      lastError = null;
+      break;
+    } catch (e) {
+      lastError = e;
+      console.error(`Falha ao carregar do Supabase (tentativa ${attempt}/${maxAttempts}):`, e);
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 800));
       }
     }
+  }
 
-    if (S.users.length === 0) needsSeed = true;
-  } catch (e) {
-    console.error("Falha ao carregar do Supabase (se a mensagem nao for 'not found', ha um problema de conexao/configuracao):", e);
-    needsSeed = true;
-  } finally {
-    if (needsSeed) {
-      S.users = [{
-        id: uid(),
-        username: "admin",
-        password: "admin",
-        name: "Administrador",
-        isAdmin: true,
-        permissions: emptyPermissions(),
-        actions: emptyActions(),
-      }];
-    }
+  if (lastError) {
+    // Falha persistente de conexao (mesmo apos tentar de novo). Por segurança, NAO
+    // recria o usuario admin nesse caso - isso evita sobrescrever dados reais caso
+    // o problema seja so uma demora passageira do banco, nao um banco vazio de verdade.
+    S.loadError = "Não foi possível conectar ao banco de dados. Recarregue a página para tentar novamente.";
     S.loaded = true;
     render();
-    if (migratedFromOld) {
-      // Migracao unica: grava tudo no novo formato (chaves separadas).
-      // So acontece uma vez, entao nao ha problema em salvar tudo de uma vez aqui.
-      persist("tools", "loans", "obras", "rentedTools", "history", "maintenances", "users");
-    } else if (needsSeed) {
-      persist("users");
-    }
+    return;
+  }
+
+  const needsSeed = S.users.length === 0;
+  if (needsSeed) {
+    S.users = [{
+      id: uid(),
+      username: "admin",
+      password: "admin",
+      name: "Administrador",
+      isAdmin: true,
+      permissions: emptyPermissions(),
+      actions: emptyActions(),
+    }];
+  }
+  S.loaded = true;
+  render();
+  if (status === "migrated") {
+    // Migracao unica: grava tudo no novo formato (chaves separadas).
+    // So acontece uma vez, entao nao ha problema em salvar tudo de uma vez aqui.
+    persist("tools", "loans", "obras", "rentedTools", "history", "maintenances", "users");
+  } else if (needsSeed) {
+    persist("users");
   }
 }
 
@@ -1042,21 +1069,35 @@ async function persist(...slices) {
   S.saving = true;
   S.error = "";
   render();
-  try {
-    const results = await Promise.all(
-      slices.map((sliceName) =>
-        window.storage.set(SLICE_KEYS[sliceName], JSON.stringify(S[sliceName]), true)
-      )
-    );
-    if (results.some((r) => !r)) throw new Error("sem resultado");
-  } catch (e) {
-    console.error("Falha ao salvar no Supabase:", e);
-    const detail = (e && (e.message || e.details || e.hint)) ? ` (${e.message || e.details || e.hint})` : "";
-    S.error = `Não foi possível salvar. Tente novamente.${detail}`;
-  } finally {
-    S.saving = false;
-    render();
+
+  const maxAttempts = 3;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const results = await Promise.all(
+        slices.map((sliceName) =>
+          window.storage.set(SLICE_KEYS[sliceName], JSON.stringify(S[sliceName]), true)
+        )
+      );
+      if (results.some((r) => !r)) throw new Error("sem resultado");
+      lastError = null;
+      break;
+    } catch (e) {
+      lastError = e;
+      console.error(`Falha ao salvar no Supabase (tentativa ${attempt}/${maxAttempts}):`, e);
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 800));
+      }
+    }
   }
+
+  if (lastError) {
+    const detail = (lastError.message || lastError.details || lastError.hint)
+      ? ` (${lastError.message || lastError.details || lastError.hint})` : "";
+    S.error = `Não foi possível salvar. Tente novamente.${detail}`;
+  }
+  S.saving = false;
+  render();
 }
 
 function logHistory(entry) {
@@ -1462,6 +1503,31 @@ function removeObra(obraId) {
   persist("obras");
 }
 
+function openEditObra(obraId) {
+  const obra = S.obras.find((o) => o.id === obraId);
+  S.editObra = obra;
+  S.editObraForm = {
+    name: obra.name,
+    engenheiro: obra.engenheiro || "",
+    mestre: obra.mestre || "",
+  };
+  S.error = "";
+  render();
+}
+
+function saveEditObra() {
+  const name = S.editObraForm.name.trim();
+  if (!name) { S.error = "Digite o nome da obra."; render(); return; }
+  const obra = S.editObra;
+  obra.name = name;
+  obra.engenheiro = S.editObraForm.engenheiro.trim();
+  obra.mestre = S.editObraForm.mestre.trim();
+  S.editObra = null;
+  S.editObraForm = null;
+  S.error = "";
+  persist("obras");
+}
+
 /* =========================================================
    Acoes - Ferramentas alugadas
    ========================================================= */
@@ -1833,6 +1899,23 @@ function render() {
 }
 
 function renderLogin() {
+  if (S.loadError) {
+    return `
+      <div class="login-page">
+        <div class="login-card">
+          <div class="login-brand">
+            <div class="sidebar-brand-mark">EC</div>
+            <div>
+              <div class="login-brand-text">Engenharia Castanhel</div>
+              <div class="login-brand-subtext">Ferramentaria</div>
+            </div>
+          </div>
+          <div class="login-error">${escapeHtml(S.loadError)}</div>
+          <button class="login-btn" data-action="reloadPage">Recarregar página</button>
+        </div>
+      </div>
+    `;
+  }
   return `
     <div class="login-page">
       <div class="login-card">
@@ -2320,6 +2403,7 @@ function renderObras() {
   const counts = toolCountByObra();
   const user = S.currentUser;
   const canAdd = canDo(user, "obras", "add");
+  const canEdit = canDo(user, "obras", "edit");
   const canRemove = canDo(user, "obras", "remove");
   return `
     <header class="header">
@@ -2362,7 +2446,7 @@ function renderObras() {
         ${S.obras.map((obra) => `
           <div class="obra-card">
             <div class="obra-main">
-              <div class="tag-name">${escapeHtml(obra.name)}</div>
+              <div class="${canEdit ? "tag-name-clickable" : "tag-name"}" ${canEdit ? `data-action="openEditObra" data-id="${obra.id}"` : ""}>${escapeHtml(obra.name)}</div>
               <div class="obra-people-row">
                 ${obra.engenheiro ? `<span class="obra-person"><b>Engenheiro:</b> ${escapeHtml(obra.engenheiro)}</span>` : ""}
                 ${obra.mestre ? `<span class="obra-person"><b>Mestre de obra:</b> ${escapeHtml(obra.mestre)}</span>` : ""}
@@ -2370,6 +2454,7 @@ function renderObras() {
             </div>
             <div class="obra-right">
               <div class="obra-tool-count">${counts[obra.id] || 0} ferramenta(s)</div>
+              ${canEdit ? `<button class="ghost-btn" data-action="openEditObra" data-id="${obra.id}">Editar</button>` : ""}
               ${canRemove ? `<button class="remove-btn" data-action="removeObra" data-id="${obra.id}">remover</button>` : ""}
             </div>
           </div>
@@ -2720,6 +2805,27 @@ function renderModals() {
     `;
   }
 
+  if (S.editObra && S.editObraForm) {
+    html += `
+      <div class="modal-overlay" data-action="closeEditObra">
+        <div class="modal" data-stop="1">
+          <div class="modal-title">Editar obra</div>
+          <label class="modal-label">Nome da obra</label>
+          <input type="text" class="text-input" id="edit-obra-name" data-bind="editObraForm.name" value="${escapeAttr(S.editObraForm.name)}" />
+          <label class="modal-label" style="margin-top:10px">Engenheiro responsável</label>
+          <input type="text" class="text-input" id="edit-obra-eng" data-bind="editObraForm.engenheiro" value="${escapeAttr(S.editObraForm.engenheiro)}" />
+          <label class="modal-label" style="margin-top:10px">Mestre de obra</label>
+          <input type="text" class="text-input" id="edit-obra-mestre" data-bind="editObraForm.mestre" value="${escapeAttr(S.editObraForm.mestre)}" />
+          ${S.error ? `<div class="modal-error">${escapeHtml(S.error)}</div>` : ""}
+          <div class="inline-card-actions">
+            <button class="ghost-btn" data-action="closeEditObra">Cancelar</button>
+            <button class="primary-btn" data-action="saveEditObra">Salvar alterações</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   if (S.editUser && S.editUserForm) {
     html += `
       <div class="modal-overlay" data-action="closeEditUser">
@@ -2772,6 +2878,8 @@ const ACTION_PERMISSION = {
   toggleAddObra: ["obras", "add"],
   addObra: ["obras", "add"],
   removeObra: ["obras", "remove"],
+  openEditObra: ["obras", "edit"],
+  saveEditObra: ["obras", "edit"],
   exportAvailableExcel: ["relatorios", "exportExcel"],
   exportObraExcel: ["relatorios", "exportExcel"],
   exportAvailablePdf: ["relatorios", "exportPdf"],
@@ -2791,6 +2899,7 @@ function handleAction(action, id, btn) {
       render();
       break;
     case "doLogin": doLogin(); break;
+    case "reloadPage": window.location.reload(); break;
     case "doLogout": doLogout(); break;
     case "toggleAddUser": S.showAddUser = true; S.error = ""; render(); break;
     case "cancelAddUser": S.showAddUser = false; S.newUser = emptyUser(); S.error = ""; render(); break;
@@ -2838,6 +2947,9 @@ function handleAction(action, id, btn) {
     case "cancelAddObra": S.showAddObra = false; S.newObra = emptyObra(); S.error = ""; render(); break;
     case "addObra": addObra(); break;
     case "removeObra": removeObra(id); break;
+    case "openEditObra": openEditObra(id); break;
+    case "closeEditObra": S.editObra = null; S.editObraForm = null; S.error = ""; render(); break;
+    case "saveEditObra": saveEditObra(); break;
     case "toggleAddRented": S.showAddRented = true; S.error = ""; render(); break;
     case "cancelAddRented": S.showAddRented = false; S.newRented = emptyRented(); S.error = ""; render(); break;
     case "addRentedTool": addRentedTool(); break;
