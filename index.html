@@ -1786,6 +1786,9 @@ function availableToolsReport() {
   const alb = activeLoanByTool();
   return S.tools.filter((t) => !alb[t.id]).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
 }
+function generalToolsReport() {
+  return [...S.tools].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+}
 function obraToolsReport() {
   if (!S.reportObraId) return { owned: [], rented: [] };
   return {
@@ -1799,6 +1802,13 @@ const AVAILABLE_COLUMNS = [
   { key: "code", label: "Código" },
   { key: "valueLabel", label: "Valor" },
   { key: "obraName", label: "Obra" },
+];
+const GENERAL_COLUMNS = [
+  { key: "name", label: "Ferramenta" },
+  { key: "code", label: "Código" },
+  { key: "valueLabel", label: "Valor" },
+  { key: "obraName", label: "Obra" },
+  { key: "status", label: "Status" },
 ];
 const OBRA_COLUMNS = [
   { key: "name", label: "Ferramenta" },
@@ -1815,6 +1825,24 @@ function availableExportRows() {
     valueLabel: t.value != null ? formatMoney(t.value) : "",
     obraName: t.obraId && obMap[t.obraId] ? obMap[t.obraId].name : "Sem obra",
   }));
+}
+function generalExportRows() {
+  const obMap = obraById();
+  const alb = activeLoanByTool();
+  const amb = activeMaintenanceByTool();
+  return generalToolsReport().map((t) => {
+    const loan = alb[t.id];
+    const maintenance = amb[t.id];
+    let status = "Disponível";
+    if (loan) status = `Alocada com ${loan.borrower}`;
+    else if (maintenance) status = `Em manutenção - ${maintenance.place}`;
+    return {
+      name: t.name, code: t.code || "",
+      valueLabel: t.value != null ? formatMoney(t.value) : "",
+      obraName: t.obraId && obMap[t.obraId] ? obMap[t.obraId].name : "Sem obra",
+      status,
+    };
+  });
 }
 function obraExportRows() {
   if (!S.reportObraId) return [];
@@ -2527,9 +2555,11 @@ function renderHistorico() {
 }
 
 function renderRelatorios() {
+  const general = generalToolsReport();
   const avail = availableToolsReport();
   const obMap = obraById();
   const alb = activeLoanByTool();
+  const amb = activeMaintenanceByTool();
   const report = obraToolsReport();
   const user = S.currentUser;
   const canExcel = canDo(user, "relatorios", "exportExcel");
@@ -2543,6 +2573,42 @@ function renderRelatorios() {
         <h1 class="title">Relatórios</h1>
       </div>
     </header>
+
+    <div class="report-section">
+      <div class="report-section-header">
+        <h2 class="report-section-title">Relatório geral (todas as ferramentas)</h2>
+        <div class="report-actions">
+          <span class="report-count">${general.length} ferramenta(s)</span>
+          ${canExcel ? `<button class="export-btn" data-action="exportGeneralExcel">Exportar Excel</button>` : ""}
+          ${canPdf ? `<button class="export-btn" data-action="exportGeneralPdf">Exportar PDF</button>` : ""}
+        </div>
+      </div>
+      ${general.length === 0 ? `
+        <div class="empty-state">Nenhuma ferramenta cadastrada ainda.</div>
+      ` : `
+        <div class="list">
+          ${general.map((tool) => {
+            const loan = alb[tool.id];
+            const maintenance = amb[tool.id];
+            return `
+            <div class="report-row">
+              <div class="tag-name">${escapeHtml(tool.name)}</div>
+              <div class="tag-meta-row">
+                ${tool.code ? `<span class="tag-code">#${escapeHtml(tool.code)}</span>` : ""}
+                ${tool.value != null ? `<span class="tag-value">${formatMoney(tool.value)}</span>` : ""}
+                ${tool.obraId && obMap[tool.obraId] ? `<span class="tag-obra">${escapeHtml(obMap[tool.obraId].name)}</span>` : ""}
+                ${loan
+                  ? `<span class="status-loaned-title">com ${escapeHtml(loan.borrower)}</span>`
+                  : maintenance
+                    ? `<span class="status-maintenance-title">em manutenção</span>`
+                    : `<span class="status-available">Disponível</span>`}
+              </div>
+            </div>
+          `;
+          }).join("")}
+        </div>
+      `}
+    </div>
 
     <div class="report-section">
       <div class="report-section-header">
@@ -2881,6 +2947,8 @@ const ACTION_PERMISSION = {
   openEditObra: ["obras", "edit"],
   saveEditObra: ["obras", "edit"],
   exportAvailableExcel: ["relatorios", "exportExcel"],
+  exportGeneralExcel: ["relatorios", "exportExcel"],
+  exportGeneralPdf: ["relatorios", "exportPdf"],
   exportObraExcel: ["relatorios", "exportExcel"],
   exportAvailablePdf: ["relatorios", "exportPdf"],
   exportObraPdf: ["relatorios", "exportPdf"],
@@ -2957,6 +3025,8 @@ function handleAction(action, id, btn) {
     case "clearPropriasFilters": S.codeFilter = ""; S.obraFilter = ""; S.dateFrom = ""; S.dateTo = ""; render(); break;
     case "clearHistoryFilters": S.historyCodeFilter = ""; S.historyObraFilter = ""; S.historyDateFrom = ""; S.historyDateTo = ""; render(); break;
     case "exportAvailableExcel": exportToExcel(availableExportRows(), AVAILABLE_COLUMNS, "ferramentas-disponiveis.xlsx"); break;
+    case "exportGeneralExcel": exportToExcel(generalExportRows(), GENERAL_COLUMNS, "ferramentas-geral.xlsx"); break;
+    case "exportGeneralPdf": downloadPdfReport("Relatório geral de ferramentas", generalExportRows(), GENERAL_COLUMNS, "ferramentas-geral.pdf"); break;
     case "exportAvailablePdf": downloadPdfReport("Ferramentas disponíveis", availableExportRows(), AVAILABLE_COLUMNS, "ferramentas-disponiveis.pdf"); break;
     case "exportObraExcel": {
       const obMap = obraById();
