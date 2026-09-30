@@ -357,6 +357,8 @@
   .tag-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .loan-btn { padding: 8px 14px; font-size: 13px; font-weight: 600; border: none; border-radius: 4px; background: var(--ink); color: #FFF; }
   .maintenance-btn { padding: 8px 14px; font-size: 13px; font-weight: 600; border: 1.5px solid var(--accent); border-radius: 4px; background: transparent; color: var(--accent-text); }
+  .notify-btn { padding: 8px 14px; font-size: 13px; font-weight: 600; border: 1.5px solid var(--rust); border-radius: 4px; background: transparent; color: var(--rust); }
+  .notify-sent { padding: 8px 4px; font-size: 12px; font-weight: 500; color: var(--muted); font-style: italic; }
   .return-btn { padding: 8px 14px; font-size: 13px; font-weight: 600; border: 1.5px solid var(--steel); border-radius: 4px; background: transparent; color: var(--steel); }
   .remove-btn { padding: 6px 8px; font-size: 12px; border: none; background: transparent; color: var(--muted); text-decoration: underline; }
 
@@ -385,7 +387,16 @@
   .export-btn { padding: 7px 12px; font-size: 12px; font-weight: 600; border: 1.5px solid var(--steel); border-radius: 4px; background: transparent; color: var(--steel); }
 
   .history-card { display: flex; align-items: center; gap: 14px; background: var(--card-bg); border: 1.5px solid var(--border); border-radius: 4px; padding: 12px 16px; flex-wrap: wrap; }
-  .history-badge { flex-shrink: 0; font-size: 11px; font-weight: 600; padding: 5px 10px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .history-badge { flex-shrink: 0; font-size: 11px; font-weight: 600; padding: 5px 10px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.04em; background: #E9E9F5; color: var(--ink); }
+  .badge-cadastro { background: #E9E9F5; color: var(--ink); }
+  .badge-alocacao { background: #F6DADA; color: var(--rust); }
+  .badge-devolucao { background: #DCEEE2; color: var(--green); }
+  .badge-obra { background: #D6EFFA; color: var(--accent-text); }
+  .badge-remocao { background: #F6DADA; color: var(--rust); }
+  .badge-edicao { background: #E9E9F5; color: var(--steel); }
+  .badge-manutencao { background: #D6EFFA; color: var(--accent-text); }
+  .badge-fimmanutencao { background: #DCEEE2; color: var(--green); }
+  .badge-aviso { background: var(--rust); color: #FFF; }
   .history-body { flex: 1; min-width: 0; }
   .history-description { font-size: 13px; color: var(--muted); margin-top: 2px; }
   .history-meta-row { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
@@ -819,6 +830,7 @@ function historyLabel(type) {
     case "edicao": return "Edição";
     case "manutencao_inicio": return "Manutenção";
     case "manutencao_fim": return "Fim manutenção";
+    case "aviso": return "Aviso";
     default: return type;
   }
 }
@@ -833,6 +845,7 @@ function historyBadgeClass(type) {
     case "edicao": return "badge-edicao";
     case "manutencao_inicio": return "badge-manutencao";
     case "manutencao_fim": return "badge-fimmanutencao";
+    case "aviso": return "badge-aviso";
     default: return "badge-cadastro";
   }
 }
@@ -845,6 +858,7 @@ const PAGES = [
   { key: "manutencao", label: "Manutenção" },
   { key: "alugadas", label: "Ferramentas Alugadas" },
   { key: "obras", label: "Obras" },
+  { key: "movimentacoes", label: "Movimentações" },
   { key: "historico", label: "Histórico" },
   { key: "relatorios", label: "Relatórios" },
 ];
@@ -856,6 +870,7 @@ const PAGE_ACTIONS = {
     { key: "removeTool", label: "Remover ferramenta" },
     { key: "loan", label: "Registrar empréstimo / devolução" },
     { key: "maintenanceStart", label: "Registrar manutenção" },
+    { key: "notify", label: "Avisar retirada de ferramenta da obra" },
   ],
   manutencao: [
     { key: "conclude", label: "Concluir manutenção" },
@@ -871,6 +886,7 @@ const PAGE_ACTIONS = {
     { key: "edit", label: "Editar obra" },
     { key: "remove", label: "Remover obra" },
   ],
+  movimentacoes: [],
   historico: [],
   relatorios: [
     { key: "exportExcel", label: "Exportar Excel" },
@@ -930,7 +946,7 @@ function emptyTool() { return { name: "", code: "", brand: "", model: "", value:
 function emptyObra() { return { name: "", engenheiro: "", mestre: "" }; }
 function emptyRented() { return { name: "", dailyValue: "", rentalPlace: "", obraId: "" }; }
 function emptyMaintenance() { return { place: "", value: "", expectedDelivery: "" }; }
-function emptyUser() { return { username: "", password: "", name: "", isAdmin: false, permissions: emptyPermissions(), actions: emptyActions() }; }
+function emptyUser() { return { username: "", password: "", name: "", isAdmin: false, obraId: "", permissions: emptyPermissions(), actions: emptyActions() }; }
 
 const S = {
   loaded: false,
@@ -958,6 +974,7 @@ const S = {
   showAddRented: false, newRented: emptyRented(),
 
   historySearch: "", historyCodeFilter: "", historyObraFilter: "", historyDateFrom: "", historyDateTo: "",
+  movSearch: "", movObraFilter: "",
 
   reportObraId: "",
 
@@ -1601,6 +1618,7 @@ function addUser() {
     password,
     name: S.newUser.name.trim(),
     isAdmin: !!S.newUser.isAdmin,
+    obraId: S.newUser.obraId || null,
     permissions: { ...S.newUser.permissions },
     actions: cloneActions(S.newUser.actions),
   });
@@ -1637,6 +1655,7 @@ function openEditUser(userId) {
     password: "",
     name: user.name || "",
     isAdmin: !!user.isAdmin,
+    obraId: user.obraId || "",
     permissions: { ...emptyPermissions(), ...(user.permissions || {}) },
     actions: cloneActions(user.actions),
   };
@@ -1667,6 +1686,7 @@ function saveEditUser() {
   if (S.editUserForm.password) target.password = S.editUserForm.password;
   target.name = S.editUserForm.name.trim();
   target.isAdmin = willBeAdmin;
+  target.obraId = S.editUserForm.obraId || null;
   target.permissions = { ...S.editUserForm.permissions };
   target.actions = cloneActions(S.editUserForm.actions);
 
@@ -1703,6 +1723,34 @@ function toolById() {
 }
 function toolHistory(toolId) {
   return S.history.filter((h) => h.toolId === toolId);
+}
+
+function hasAvisoForLoan(loanId) {
+  return S.history.some((h) => h.type === "aviso" && h.loanId === loanId);
+}
+
+function notifyToolTaken(loanId) {
+  const loan = S.loans.find((l) => l.id === loanId);
+  if (!loan) return;
+  const tool = S.tools.find((t) => t.id === loan.toolId);
+  if (!tool) return;
+  if (hasAvisoForLoan(loanId)) return;
+
+  const obraName = tool.obraId && S.obras.find((o) => o.id === tool.obraId)
+    ? S.obras.find((o) => o.id === tool.obraId).name
+    : "";
+  const foremanName = (S.currentUser && (S.currentUser.name || S.currentUser.username)) || "Mestre de obra";
+
+  logHistory({
+    toolId: tool.id, toolName: tool.name, toolCode: tool.code, obraId: tool.obraId,
+    type: "aviso", loanId: loan.id,
+    description: `${foremanName} avisou: ferramenta retirada por ${loan.borrower}`,
+  });
+  persist("history");
+
+  const message = `Aviso: a ferramenta "${tool.name}"${tool.code ? ` (#${tool.code})` : ""} foi retirada da obra ${obraName || ""} por ${loan.borrower} em ${formatDate(loan.loanDate)}. Aviso enviado por ${foremanName}.`;
+  const url = `https://wa.me/?text=${encodeURIComponent(message)}`;
+  window.open(url, "_blank", "noopener");
 }
 
 function maintenanceRows() {
@@ -1781,6 +1829,15 @@ function filteredHistory() {
       if (S.historyDateTo && h.date > S.historyDateTo) return false;
       return true;
     });
+}
+function filteredMovimentacoes() {
+  return S.history
+    .filter((h) => h.type === "aviso")
+    .filter((h) => {
+      const q = S.movSearch.trim().toLowerCase();
+      return !q || (h.toolName || "").toLowerCase().includes(q);
+    })
+    .filter((h) => !S.movObraFilter || h.obraId === S.movObraFilter);
 }
 function availableToolsReport() {
   const alb = activeLoanByTool();
@@ -2006,6 +2063,7 @@ function renderPage() {
     case "manutencao": return renderManutencao();
     case "alugadas": return renderAlugadas();
     case "obras": return renderObras();
+    case "movimentacoes": return renderMovimentacoes();
     case "historico": return renderHistorico();
     case "relatorios": return renderRelatorios();
     case "usuarios": return renderUsuarios();
@@ -2045,6 +2103,7 @@ function renderPermissionsEditor(idPrefix, dataPath, isAdminChecked, permissions
 }
 
 function renderUsuarios() {
+  const obMap = obraById();
   return `
     <header class="header">
       <div>
@@ -2076,6 +2135,11 @@ function renderUsuarios() {
           <input type="checkbox" id="new-user-admin" data-bind="newUser.isAdmin" ${S.newUser.isAdmin ? "checked" : ""} />
           <label for="new-user-admin">Administrador (acesso total, incluindo Usuários)</label>
         </div>
+        <label class="modal-label">Obra vinculada (opcional - para mestre de obra)</label>
+        <select class="select-input" id="new-user-obra" data-bind="newUser.obraId" style="width:100%; margin-bottom:10px">
+          <option value="">Nenhuma / todas as obras</option>
+          ${S.obras.map((o) => `<option value="${o.id}" ${S.newUser.obraId === o.id ? "selected" : ""}>${escapeHtml(o.name)}</option>`).join("")}
+        </select>
         ${renderPermissionsEditor("new-user", "newUser", S.newUser.isAdmin, S.newUser.permissions, S.newUser.actions)}
         <div class="inline-card-actions">
           <button class="ghost-btn" data-action="cancelAddUser">Cancelar</button>
@@ -2093,6 +2157,7 @@ function renderUsuarios() {
               ${u.isAdmin ? `<span class="admin-badge">Administrador</span>` : ""}
             </div>
             <div class="obra-person">usuário: ${escapeHtml(u.username)}</div>
+            ${u.obraId && obMap[u.obraId] ? `<div class="obra-person"><b>Obra vinculada:</b> ${escapeHtml(obMap[u.obraId].name)}</div>` : ""}
             ${!u.isAdmin ? `
               <div class="perm-tags">
                 ${PAGES.filter((p) => u.permissions && u.permissions[p.key]).map((p) => `<span class="perm-tag">${p.label}</span>`).join("") || `<span class="perm-tag">Sem acesso a nenhuma aba</span>`}
@@ -2131,10 +2196,17 @@ function toolCardHtml(tool, loan, maintenance, obMap, user) {
   const canMaintenanceStart = canDo(user, "proprias", "maintenanceStart");
   const canConcludeMaintenance = canDo(user, "manutencao", "conclude");
   const canRemove = canDo(user, "proprias", "removeTool");
+  const canNotify = canDo(user, "proprias", "notify")
+    && user && user.obraId && tool.obraId === user.obraId;
 
   let actionsHtml = "";
   if (loan) {
     actionsHtml = canLoan ? `<button class="return-btn" data-action="returnTool" data-id="${loan.id}">Registrar devolução</button>` : "";
+    if (canNotify) {
+      actionsHtml += hasAvisoForLoan(loan.id)
+        ? `<span class="notify-sent">Aviso enviado</span>`
+        : `<button class="notify-btn" data-action="notifyToolTaken" data-id="${loan.id}">Avisar retirada</button>`;
+    }
   } else if (maintenance) {
     actionsHtml = canConcludeMaintenance ? `<button class="return-btn" data-action="concludeMaintenance" data-id="${maintenance.id}">Concluir manutenção</button>` : "";
   } else {
@@ -2485,6 +2557,57 @@ function renderObras() {
               ${canEdit ? `<button class="ghost-btn" data-action="openEditObra" data-id="${obra.id}">Editar</button>` : ""}
               ${canRemove ? `<button class="remove-btn" data-action="removeObra" data-id="${obra.id}">remover</button>` : ""}
             </div>
+          </div>
+        `).join("")}
+      </div>
+    `}
+  `;
+}
+
+function renderMovimentacoes() {
+  const list = filteredMovimentacoes();
+  const totalAvisos = S.history.filter((h) => h.type === "aviso").length;
+  const obMap = obraById();
+  return `
+    <header class="header">
+      <div>
+        <div class="eyebrow">AVISOS DE RETIRADA</div>
+        <h1 class="title">Movimentações</h1>
+      </div>
+      <div class="header-stats">
+        <div class="stat-block">
+          <div class="stat-number">${totalAvisos}</div>
+          <div class="stat-label">avisos</div>
+        </div>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <input id="mov-search" type="text" class="search-input" placeholder="Buscar por nome da ferramenta" data-bind="movSearch" value="${escapeAttr(S.movSearch)}" />
+      <select id="mov-obra-filter" class="filter-input" data-bind="movObraFilter">
+        <option value="">Todas as obras</option>
+        ${S.obras.map((o) => `<option value="${o.id}" ${S.movObraFilter === o.id ? "selected" : ""}>${escapeHtml(o.name)}</option>`).join("")}
+      </select>
+    </div>
+
+    ${list.length === 0 ? `
+      <div class="empty-state">${totalAvisos === 0
+        ? 'Nenhum aviso registrado ainda. Os avisos aparecem aqui quando um mestre de obra clica em "Avisar retirada" numa ferramenta da obra dele.'
+        : "Nenhum aviso encontrado com essa busca."}</div>
+    ` : `
+      <div class="list">
+        ${list.map((h) => `
+          <div class="history-card">
+            <div class="history-badge ${historyBadgeClass(h.type)}">${historyLabel(h.type)}</div>
+            <div class="history-body">
+              <div class="tag-name">${escapeHtml(h.toolName || "Ferramenta removida")}</div>
+              <div class="history-description">${escapeHtml(h.description)}</div>
+              <div class="history-meta-row">
+                ${h.toolCode ? `<span class="tag-code">#${escapeHtml(h.toolCode)}</span>` : ""}
+                ${h.obraId && obMap[h.obraId] ? `<span class="tag-obra">${escapeHtml(obMap[h.obraId].name)}</span>` : ""}
+              </div>
+            </div>
+            <div class="history-date">${formatDate(h.date)}</div>
           </div>
         `).join("")}
       </div>
@@ -2907,6 +3030,11 @@ function renderModals() {
             <input type="checkbox" id="edit-user-admin" data-bind="editUserForm.isAdmin" ${S.editUserForm.isAdmin ? "checked" : ""} />
             <label for="edit-user-admin">Administrador (acesso total, incluindo Usuários)</label>
           </div>
+          <label class="modal-label" style="margin-top:10px">Obra vinculada (opcional - para mestre de obra)</label>
+          <select class="select-input" id="edit-user-obra" data-bind="editUserForm.obraId" style="width:100%">
+            <option value="">Nenhuma / todas as obras</option>
+            ${S.obras.map((o) => `<option value="${o.id}" ${S.editUserForm.obraId === o.id ? "selected" : ""}>${escapeHtml(o.name)}</option>`).join("")}
+          </select>
           ${renderPermissionsEditor("edit-user", "editUserForm", S.editUserForm.isAdmin, S.editUserForm.permissions, S.editUserForm.actions)}
           ${S.error ? `<div class="modal-error">${escapeHtml(S.error)}</div>` : ""}
           <div class="inline-card-actions">
@@ -2933,6 +3061,7 @@ const ACTION_PERMISSION = {
   confirmLoan: ["proprias", "loan"],
   returnTool: ["proprias", "loan"],
   openMaintenanceModal: ["proprias", "maintenanceStart"],
+  notifyToolTaken: ["proprias", "notify"],
   confirmMaintenance: ["proprias", "maintenanceStart"],
   concludeMaintenance: ["manutencao", "conclude"],
   openEditMaintenance: ["manutencao", "edit"],
@@ -2997,6 +3126,7 @@ function handleAction(action, id, btn) {
     case "confirmLoan": confirmLoan(); break;
     case "returnTool": returnTool(id); break;
     case "openMaintenanceModal": openMaintenanceModal(id); break;
+    case "notifyToolTaken": notifyToolTaken(id); break;
     case "closeMaintenanceModal": S.maintenanceModal = null; S.error = ""; render(); break;
     case "confirmMaintenance": confirmMaintenance(); break;
     case "concludeMaintenance": concludeMaintenance(id); break;
