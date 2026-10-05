@@ -975,6 +975,7 @@ const S = {
 
   historySearch: "", historyCodeFilter: "", historyObraFilter: "", historyDateFrom: "", historyDateTo: "",
   movSearch: "", movObraFilter: "",
+  notifyModal: null, notifyDestObraId: "",
 
   reportObraId: "",
 
@@ -1736,21 +1737,47 @@ function notifyToolTaken(loanId) {
   if (!tool) return;
   if (hasAvisoForLoan(loanId)) return;
 
-  const obraName = tool.obraId && S.obras.find((o) => o.id === tool.obraId)
-    ? S.obras.find((o) => o.id === tool.obraId).name
-    : "";
+  S.notifyModal = { loanId: loan.id, toolId: tool.id };
+  S.notifyDestObraId = "";
+  S.error = "";
+  render();
+}
+
+function closeNotifyModal() {
+  S.notifyModal = null;
+  S.notifyDestObraId = "";
+  S.error = "";
+  render();
+}
+
+function confirmNotify() {
+  if (!S.notifyModal) return;
+  if (!S.notifyDestObraId) {
+    S.error = "Selecione para qual obra a ferramenta está indo.";
+    render();
+    return;
+  }
+  const loan = S.loans.find((l) => l.id === S.notifyModal.loanId);
+  if (!loan) { S.notifyModal = null; render(); return; }
+  const tool = S.tools.find((t) => t.id === S.notifyModal.toolId);
+  if (!tool) { S.notifyModal = null; render(); return; }
+  if (hasAvisoForLoan(loan.id)) { S.notifyModal = null; render(); return; }
+
+  const destObra = S.obras.find((o) => o.id === S.notifyDestObraId);
+  const destObraName = destObra ? destObra.name : "";
   const foremanName = (S.currentUser && (S.currentUser.name || S.currentUser.username)) || "Mestre de obra";
 
   logHistory({
     toolId: tool.id, toolName: tool.name, toolCode: tool.code, obraId: tool.obraId,
-    type: "aviso", loanId: loan.id,
-    description: `${foremanName} avisou: ferramenta retirada por ${loan.borrower}`,
+    type: "aviso", loanId: loan.id, destObraId: S.notifyDestObraId,
+    description: `${foremanName} avisou: ferramenta retirada por ${loan.borrower}, indo para a obra ${destObraName}`,
   });
   persist("history");
 
-  const message = `Aviso: a ferramenta "${tool.name}"${tool.code ? ` (#${tool.code})` : ""} foi retirada da obra ${obraName || ""} por ${loan.borrower} em ${formatDate(loan.loanDate)}. Aviso enviado por ${foremanName}.`;
-  const url = `https://wa.me/?text=${encodeURIComponent(message)}`;
-  window.open(url, "_blank", "noopener");
+  S.notifyModal = null;
+  S.notifyDestObraId = "";
+  S.error = "";
+  render();
 }
 
 function maintenanceRows() {
@@ -2604,7 +2631,8 @@ function renderMovimentacoes() {
               <div class="history-description">${escapeHtml(h.description)}</div>
               <div class="history-meta-row">
                 ${h.toolCode ? `<span class="tag-code">#${escapeHtml(h.toolCode)}</span>` : ""}
-                ${h.obraId && obMap[h.obraId] ? `<span class="tag-obra">${escapeHtml(obMap[h.obraId].name)}</span>` : ""}
+                ${h.obraId && obMap[h.obraId] ? `<span class="tag-obra">Origem: ${escapeHtml(obMap[h.obraId].name)}</span>` : ""}
+                ${h.destObraId && obMap[h.destObraId] ? `<span class="tag-obra">Destino: ${escapeHtml(obMap[h.destObraId].name)}</span>` : ""}
               </div>
             </div>
             <div class="history-date">${formatDate(h.date)}</div>
@@ -2994,6 +3022,26 @@ function renderModals() {
     `;
   }
 
+  if (S.notifyModal) {
+    html += `
+      <div class="modal-overlay" data-action="closeNotifyModal">
+        <div class="modal" data-stop="1">
+          <div class="modal-title">Avisar retirada</div>
+          <label class="modal-label">Para qual obra a ferramenta está indo?</label>
+          <select class="select-input" id="notify-dest-obra" data-bind="notifyDestObraId" style="width:100%">
+            <option value="">Selecione a obra de destino</option>
+            ${S.obras.map((o) => `<option value="${o.id}" ${S.notifyDestObraId === o.id ? "selected" : ""}>${escapeHtml(o.name)}</option>`).join("")}
+          </select>
+          ${S.error ? `<div class="modal-error">${escapeHtml(S.error)}</div>` : ""}
+          <div class="inline-card-actions">
+            <button class="ghost-btn" data-action="closeNotifyModal">Cancelar</button>
+            <button class="primary-btn" data-action="confirmNotify">Enviar aviso</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   if (S.editObra && S.editObraForm) {
     html += `
       <div class="modal-overlay" data-action="closeEditObra">
@@ -3062,6 +3110,7 @@ const ACTION_PERMISSION = {
   returnTool: ["proprias", "loan"],
   openMaintenanceModal: ["proprias", "maintenanceStart"],
   notifyToolTaken: ["proprias", "notify"],
+  confirmNotify: ["proprias", "notify"],
   confirmMaintenance: ["proprias", "maintenanceStart"],
   concludeMaintenance: ["manutencao", "conclude"],
   openEditMaintenance: ["manutencao", "edit"],
@@ -3127,6 +3176,8 @@ function handleAction(action, id, btn) {
     case "returnTool": returnTool(id); break;
     case "openMaintenanceModal": openMaintenanceModal(id); break;
     case "notifyToolTaken": notifyToolTaken(id); break;
+    case "closeNotifyModal": closeNotifyModal(); break;
+    case "confirmNotify": confirmNotify(); break;
     case "closeMaintenanceModal": S.maintenanceModal = null; S.error = ""; render(); break;
     case "confirmMaintenance": confirmMaintenance(); break;
     case "concludeMaintenance": concludeMaintenance(id); break;
